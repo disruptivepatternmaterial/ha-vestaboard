@@ -8,9 +8,9 @@ from datetime import datetime, time, timedelta
 import logging
 from typing import Any
 
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientResponseError
 
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntry, ConfigEntryState
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.debounce import Debouncer
@@ -29,6 +29,7 @@ from .const import (
     CONF_QUIET_START,
     CONF_SHOW_FRAME,
     CONF_STRATEGY,
+    DATA_AUTH_FAILING_SINCE,
     DOMAIN,
 )
 from .helpers import create_framed_array_png, create_png, decode
@@ -43,6 +44,16 @@ type VestaboardConfigEntry = ConfigEntry[
 # How long a board can go unread before its entities become unavailable.
 # Network or Wi-Fi hiccups can fail the odd read, so a few failed polls keep the last state.
 READ_FAILURE_GRACE = timedelta(minutes=1)
+
+# How long a board must keep rejecting its API key before asking to reauthenticate.
+# A rebooting or reconnecting board can briefly reject a valid key.
+AUTH_FAILURE_GRACE = timedelta(minutes=5)
+
+READ_TIMEOUT = 10
+WRITE_TIMEOUT = 10
+WRITE_ATTEMPTS = 3
+# Seconds before retrying a failed write, doubled after each further failure
+WRITE_RETRY_DELAY = 2
 
 # Coalesce member board updates (e.g. after writing to every board) into one refresh
 ARRAY_REFRESH_COOLDOWN = 0.5
@@ -183,20 +194,30 @@ class VestaboardCoordinator(QuietHoursMixin, DataUpdateCoordinator):
         """Check if quiet hours."""
         return self._in_own_quiet_hours()
 
+    @property
+    def _auth_failing_since(self) -> dict[str, datetime]:
+        """Return when each board started rejecting its API key.
+
+        Kept outside the coordinator so it survives setup retries, which
+        create a new coordinator each time.
+        """
+        return self.hass.data[DOMAIN].setdefault(DATA_AUTH_FAILING_SINCE, {})
+
     async def _async_update_data(self):
         """Fetch data from Vestaboard."""
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(READ_TIMEOUT):
                 data = await self.vestaboard.read_message()
         except InvalidApiKeyError as err:
-            raise ConfigEntryAuthFailed from err
+            return self._handle_auth_failure(err)
         except (ClientError, TimeoutError) as ex:
             return self._handle_read_failure(ex)
         if data is None:
-            raise ConfigEntryAuthFailed
-        if self._read_failing_since is not None:
-            _LOGGER.debug("Reading %s recovered", self.vestaboard.base_url)
-            self._read_failing_since = None
+            # Boards can answer with an empty body while starting up
+            return self._handle_read_failure(
+                UpdateFailed(f"No message in response from {self.vestaboard.base_url}")
+            )
+        self._async_read_succeeded()
 
         if self.temporary_message_expiration is None:
             self._set_persistent_message(data)
@@ -226,11 +247,65 @@ class VestaboardCoordinator(QuietHoursMixin, DataUpdateCoordinator):
             f"Couldn't read vestaboard at {self.vestaboard.base_url}"
         ) from ex
 
+    def _handle_auth_failure(self, err: InvalidApiKeyError) -> list[list[int]]:
+        """Treat a rejected API key as a read failure until it persists.
+
+        Raises ConfigEntryAuthFailed, starting reauthentication, only once the
+        board has rejected its API key for AUTH_FAILURE_GRACE.
+        """
+        now = dt_util.utcnow()
+        since = self._auth_failing_since.setdefault(self.config_entry.entry_id, now)
+        if now - since >= AUTH_FAILURE_GRACE:
+            raise ConfigEntryAuthFailed(
+                f"{self.vestaboard.base_url} has rejected its API key since {since}"
+            ) from err
+        return self._handle_read_failure(err)
+
+    @callback
+    def _async_read_succeeded(self) -> None:
+        """Clear read and auth failures, dismissing reauthentication if it started."""
+        if self._read_failing_since is not None:
+            _LOGGER.debug("Reading %s recovered", self.vestaboard.base_url)
+            self._read_failing_since = None
+        entry_id = self.config_entry.entry_id
+        if self._auth_failing_since.pop(entry_id, None) is None:
+            return
+        _LOGGER.info("%s accepted its API key again", self.vestaboard.base_url)
+        flow_manager = self.hass.config_entries.flow
+        for flow in flow_manager.async_progress_by_handler(
+            DOMAIN, match_context={"entry_id": entry_id, "source": SOURCE_REAUTH}
+        ):
+            flow_manager.async_abort(flow["flow_id"])
+
+    async def _async_write(self, json: dict[str, list[list[int]] | str | int]) -> bool:
+        """Write to the board, retrying failures that may be temporary."""
+        delay = WRITE_RETRY_DELAY
+        for attempt in range(1, WRITE_ATTEMPTS):
+            try:
+                async with asyncio.timeout(WRITE_TIMEOUT):
+                    return await self.vestaboard.write_message(json)
+            except (ClientError, TimeoutError) as err:
+                # A rejected API key or message won't succeed if tried again
+                if isinstance(err, ClientResponseError) and err.status < 500:
+                    raise
+                _LOGGER.debug(
+                    "Writing to %s failed (attempt %s of %s), retrying in %ss: %r",
+                    self.vestaboard.base_url,
+                    attempt,
+                    WRITE_ATTEMPTS,
+                    delay,
+                    err,
+                )
+            await asyncio.sleep(delay)
+            delay *= 2
+        async with asyncio.timeout(WRITE_TIMEOUT):
+            return await self.vestaboard.write_message(json)
+
     async def write_and_update_state(
         self, json: dict[str, list[list[int]] | str | int]
     ) -> None:
         """Write to board and immediately update coordinator."""
-        if not await self.vestaboard.write_message(json):
+        if not await self._async_write(json):
             raise UpdateFailed(f"Failed to write message to {self.name}")
 
         # Manually update coordinator state for instant UI feedback

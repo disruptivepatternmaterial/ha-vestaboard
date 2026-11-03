@@ -73,6 +73,8 @@ Alternatively:
 
 Physical Vestaboards on your network are also discovered automatically. If a board's IP address changes, use **Reconfigure** on its entry to update the host.
 
+A board that's briefly unreachable, or that rejects its API key while it restarts, keeps its last state for a minute and is then shown as unavailable until it responds again. You're only asked to reauthenticate once a board has rejected its API key for 5 minutes, and that request is dismissed if the board accepts the key again. Failed writes are tried up to 3 times.
+
 ### Virtual Vestaboards
 
 A virtual Vestaboard behaves like a real one in Home Assistant, with the same entities, image and `vestaboard.message` action, but has no hardware behind it. Use one to try out messages and automations, or to try out an array before you buy more boards.

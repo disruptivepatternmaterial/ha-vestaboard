@@ -17,6 +17,7 @@ from .const import (
     COLOR_BLACK,
     CONF_BOARD_MODEL,
     CONF_LAYOUT,
+    DATA_AUTH_FAILING_SINCE,
     DATA_HASS_CONFIG,
     DOMAIN,
     ENTRY_TYPE_ARRAY,
@@ -241,6 +242,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: VestaboardConfigEntry) 
 
     if get_entry_type(entry) == ENTRY_TYPE_VIRTUAL:
         await _virtual_store(hass, entry).async_remove()
+    hass.data[DOMAIN].get(DATA_AUTH_FAILING_SINCE, {}).pop(entry.entry_id, None)
 
     # The board is already gone, so reloading its arrays makes them fail setup
     # and raise a repair issue rather than keep showing the board's last state

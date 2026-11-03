@@ -773,9 +773,12 @@ class VestaboardConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @callback
     def _async_device_entries(self) -> list[ConfigEntry]:
-        """Return config entries for physical Vestaboards."""
+        """Return config entries for physical Vestaboards.
+
+        Ignored discoveries are excluded, as they have no API key.
+        """
         return [
             entry
-            for entry in self._async_current_entries()
+            for entry in self._async_current_entries(include_ignore=False)
             if get_entry_type(entry) == ENTRY_TYPE_DEVICE
         ]
