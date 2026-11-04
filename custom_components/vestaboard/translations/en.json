@@ -87,6 +87,7 @@
     },
     "abort": {
       "already_configured": "Device is already configured",
+      "cannot_connect": "Failed to connect",
       "reauth_successful": "Re-authentication was successful",
       "reconfigure_successful": "Re-configuration was successful",
       "board_unavailable": "The selected Vestaboard is no longer available.",

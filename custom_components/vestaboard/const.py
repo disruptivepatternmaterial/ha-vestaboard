@@ -46,6 +46,7 @@ CONF_TRANSITIONS: Final = (
 )
 CONF_VBML: Final = "vbml"
 
+DATA_AUTH_FAILING_SINCE: Final = "auth_failing_since"
 DATA_HASS_CONFIG: Final = "hass_config"
 
 ENTRY_TYPE_ARRAY: Final = "array"

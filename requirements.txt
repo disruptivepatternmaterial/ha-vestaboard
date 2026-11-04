@@ -9,5 +9,11 @@ colorlog
 isal
 pip>=26.2.1
 pre-commit
+pytest-homeassistant-custom-component
+# Needed by the http, panel_custom and dhcp components the tests load
+aiodhcpwatcher
+aiodiscover
+cached-ipaddress
+home-assistant-frontend
 ruff>=0.17.0
 zlib-ng
