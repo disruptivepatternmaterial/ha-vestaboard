@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import logging
 from typing import Any
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientConnectorError, ClientError
 import voluptuous as vol
 
 from homeassistant.components import dhcp
@@ -357,30 +357,40 @@ class VestaboardConfigFlow(ConfigFlow, domain=DOMAIN):
         # therefore a different unique_id than the one stored on the config entry.
         # Try each existing entry's API key against the new IP; if it responds,
         # this is the same board and we can silently update the stored host.
+        # Only ask for an API key once the board has rejected every stored key;
+        # a board that's restarting can't be matched yet, and is rediscovered later.
+        unmatched = False
         for entry in self._async_device_entries():
             try:
                 client = await create_client(
                     self.hass,
                     {CONF_HOST: self.host, CONF_API_KEY: entry.data[CONF_API_KEY]},
                 )
-                if await client.check_endpoint() == EndpointStatus.VALID:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates={CONF_HOST: self.host},
-                        reason="already_configured",
-                        unique_id=self.unique_id,
-                        reload_even_if_entry_is_unchanged=False,
-                    )
+                status = await client.check_endpoint()
             except asyncio.CancelledError:
                 raise
-            except (TimeoutError, ClientConnectorError, OSError, ValueError) as ex:
+            except (TimeoutError, ClientError, OSError, ValueError) as ex:
                 _LOGGER.debug(
                     "Failed to probe entry %s at %s during DHCP discovery: %s",
                     entry.entry_id,
                     self.host,
                     ex,
                 )
+                unmatched = True
+                continue
+            if status == EndpointStatus.VALID:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={CONF_HOST: self.host},
+                    reason="already_configured",
+                    unique_id=self.unique_id,
+                    reload_even_if_entry_is_unchanged=False,
+                )
+            if status != EndpointStatus.INVALID_API_KEY:
+                unmatched = True
 
+        if unmatched:
+            return self.async_abort(reason="cannot_connect")
         return await self.async_step_api_key()
 
     async def async_step_user(
