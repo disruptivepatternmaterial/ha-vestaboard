@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import ClientConnectionError, ClientResponseError
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.vestaboard.client import InvalidApiKeyError
 from custom_components.vestaboard.const import DOMAIN
@@ -21,6 +20,8 @@ from custom_components.vestaboard.coordinator import (
 from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.core import HomeAssistant
+
+from . import MockConfigEntry
 
 MESSAGE = [[0] * 22 for _ in range(6)]
 POLL = timedelta(seconds=15)
